@@ -1,0 +1,68 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --goa-green: #046634;
+  --goa-green-dark: #033E22;
+  --goa-cream: #F6F0DA;
+  --goa-cream-light: #FFFDF4;
+  --goa-pink: #FF0077;
+  --goa-yellow: #F4D000;
+  --goa-black: #101411;
+}
+
+body {
+  margin: 0;
+  background-color: var(--goa-green);
+  color: var(--goa-cream);
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-image: 
+    radial-gradient(rgba(246, 240, 218, 0.04) 1px, transparent 0),
+    radial-gradient(rgba(246, 240, 218, 0.02) 1px, transparent 0);
+  background-size: 24px 24px, 48px 48px;
+  background-position: 0 0, 24px 24px;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: #033E22;
+}
+::-webkit-scrollbar-thumb {
+  background: #F6F0DA;
+  border-radius: 2px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FF0077;
+}
+
+/* Editorial Rules & Utility Classes */
+.editorial-rule {
+  height: 1px;
+  background: rgba(246, 240, 218, 0.2);
+  width: 100%;
+}
+
+.editorial-rule-dark {
+  height: 1px;
+  background: rgba(16, 20, 17, 0.2);
+  width: 100%;
+}
+
+.editorial-tag {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  padding: 2px 6px;
+  border: 1px solid currentColor;
+}
+
+/* Tropical Wave Pattern SVG background utility */
+.wave-pattern {
+  background-image: url("data:image/svg+xml,%3Csvg width='40' height='12' viewBox='0 0 40 12' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M0 6C10 0 10 12 20 6C30 0 30 12 40 6' stroke='rgba(246,240,218,0.15)' stroke-width='1.5'/%3E%3C/svg%3E");
+}
