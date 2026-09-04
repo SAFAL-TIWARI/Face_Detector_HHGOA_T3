@@ -74,7 +74,7 @@ export class SerpApiLensProvider implements ReverseImageSearchProvider {
       const fd = new FormData();
       fd.append("api_key", apiKey.trim());
       const ext = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
-      const blob = new Blob([processedBuffer], { type: mimeType || "image/jpeg" });
+      const blob = new Blob([new Uint8Array(processedBuffer)], { type: mimeType || "image/jpeg" });
       fd.append("image", blob, `face.${ext}`);
 
       console.log(`[SerpApiLensProvider] Uploading ${processedBuffer.length} bytes to SerpApi Image API...`);

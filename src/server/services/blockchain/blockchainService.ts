@@ -34,12 +34,58 @@ export class BlockchainService {
 
       // Check for deployment.json
       const configPath = path.resolve("./src/shared/config/deployment.json");
+      let addressToUse: string | null = null;
       if (fs.existsSync(configPath)) {
-        const deployment = JSON.parse(fs.readFileSync(configPath, "utf8"));
-        this.contractAddress = deployment.contractAddress;
-        if (this.contractAddress) {
+        try {
+          const deployment = JSON.parse(fs.readFileSync(configPath, "utf8"));
+          addressToUse = deployment.contractAddress;
+        } catch {}
+      }
+
+      // Verify whether contract bytecode actually exists at this address
+      let hasCode = false;
+      if (addressToUse) {
+        try {
+          const code = await this.provider.getCode(addressToUse);
+          if (code && code !== "0x") {
+            hasCode = true;
+          }
+        } catch {}
+      }
+
+      if (hasCode && addressToUse) {
+        this.contractAddress = addressToUse;
+        this.contract = new ethers.Contract(this.contractAddress, EvidenceRegistryABI, this.signer);
+        console.log(`[BlockchainService] Connected to EvidenceRegistry at ${this.contractAddress} on Chain ID ${network.chainId}`);
+      } else {
+        // Auto-deploy EvidenceRegistry if node is active but contract is not yet deployed
+        const artifactPath = path.resolve("./artifacts/contracts/EvidenceRegistry.sol/EvidenceRegistry.json");
+        if (fs.existsSync(artifactPath)) {
+          console.log("[BlockchainService] Fresh node detected without EvidenceRegistry. Auto-deploying...");
+          const artifact = JSON.parse(fs.readFileSync(artifactPath, "utf8"));
+          const factory = new ethers.ContractFactory(EvidenceRegistryABI, artifact.bytecode, this.signer);
+          const deployed = await factory.deploy();
+          await deployed.waitForDeployment();
+          this.contractAddress = await deployed.getAddress();
           this.contract = new ethers.Contract(this.contractAddress, EvidenceRegistryABI, this.signer);
-          console.log(`[BlockchainService] Connected to EvidenceRegistry at ${this.contractAddress} on Chain ID ${network.chainId}`);
+
+          const outputDir = path.resolve("./src/shared/config");
+          if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(outputDir, "deployment.json"),
+            JSON.stringify(
+              {
+                contractAddress: this.contractAddress,
+                network: "localhost",
+                chainId: network.chainId.toString(),
+                deployedAt: new Date().toISOString(),
+                deployer: await this.signer.getAddress(),
+              },
+              null,
+              2
+            )
+          );
+          console.log(`[BlockchainService] Auto-deployed EvidenceRegistry to ${this.contractAddress}`);
         }
       }
     } catch (err: any) {
