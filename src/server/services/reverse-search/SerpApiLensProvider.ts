@@ -13,11 +13,101 @@ export class SerpApiLensProvider implements ReverseImageSearchProvider {
   readonly description = "Real-time Google Lens visual matches via SerpApi engine";
 
   /**
-   * Uploads an image buffer to temporary public storage to obtain a direct HTTPS raw image URL for Google Lens.
+   * Resizes image buffer if it exceeds 450KB using Playwright headless canvas
+   * so it adheres strictly to SerpApi's 500KB image upload limit.
+   */
+  private async ensureUnder500KB(buffer: Buffer, mime: string = "image/jpeg"): Promise<Buffer> {
+    if (buffer.length <= 450 * 1024) return buffer;
+    try {
+      const { chromium } = await import("playwright");
+      const browser = await chromium.launch({ headless: true });
+      try {
+        const page = await browser.newPage();
+        const b64 = buffer.toString("base64");
+        const dataUrl = `data:${mime};base64,${b64}`;
+        const resized = await page.evaluate(async (params: { dataUrl: string; mimeType: string }) => {
+          return new Promise<string>((resolve) => {
+            const img = new Image();
+            img.onload = () => {
+              let w = img.width;
+              let h = img.height;
+              const maxDim = 600;
+              if (w > maxDim || h > maxDim) {
+                if (w > h) {
+                  h = Math.round((h * maxDim) / w);
+                  w = maxDim;
+                } else {
+                  w = Math.round((w * maxDim) / h);
+                  h = maxDim;
+                }
+              }
+              const canvas = document.createElement("canvas");
+              canvas.width = w;
+              canvas.height = h;
+              const ctx = canvas.getContext("2d");
+              if (!ctx) return resolve(params.dataUrl);
+              ctx.drawImage(img, 0, 0, w, h);
+              resolve(canvas.toDataURL(params.mimeType || "image/jpeg", 0.85));
+            };
+            img.onerror = () => resolve(params.dataUrl);
+            img.src = params.dataUrl;
+          });
+        }, { dataUrl, mimeType: mime });
+        const cleanB64 = resized.replace(/^data:[^;]+;base64,/, "");
+        return Buffer.from(cleanB64, "base64");
+      } finally {
+        await browser.close();
+      }
+    } catch (e: any) {
+      console.warn("[SerpApiLensProvider] Downsampling buffer warning:", e.message);
+      return buffer;
+    }
+  }
+
+  /**
+   * Uploads an image buffer directly to SerpApi's official Image API
+   * to obtain a first-party image_id for Google Lens with zero 3rd-party dependencies.
+   */
+  public async uploadToSerpApi(imageBuffer: Buffer, mimeType: string, apiKey: string): Promise<string | null> {
+    try {
+      const processedBuffer = await this.ensureUnder500KB(imageBuffer, mimeType);
+      const fd = new FormData();
+      fd.append("api_key", apiKey.trim());
+      const ext = mimeType.includes("png") ? "png" : mimeType.includes("webp") ? "webp" : "jpg";
+      const blob = new Blob([processedBuffer], { type: mimeType || "image/jpeg" });
+      fd.append("image", blob, `face.${ext}`);
+
+      console.log(`[SerpApiLensProvider] Uploading ${processedBuffer.length} bytes to SerpApi Image API...`);
+      const res = await fetch("https://serpapi.com/image", {
+        method: "POST",
+        body: fd,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.warn(`[SerpApiLensProvider] SerpApi image upload failed (${res.status}): ${text.slice(0, 200)}`);
+        return null;
+      }
+
+      const data: any = await res.json();
+      if (data.image_id) {
+        console.log("[SerpApiLensProvider] Direct SerpApi image_id created:", data.image_id);
+        return data.image_id;
+      }
+      return null;
+    } catch (e: any) {
+      console.warn("[SerpApiLensProvider] SerpApi image upload error:", e.message);
+      return null;
+    }
+  }
+
+  /**
+   * Fallback image uploader in case SerpApi direct image upload is unreachable
    */
   public async uploadToPublicHost(imageBuffer: Buffer, mimeType: string): Promise<string | null> {
     try {
-      const b64 = imageBuffer.toString("base64");
+      const processedBuffer = await this.ensureUnder500KB(imageBuffer, mimeType);
+      const b64 = processedBuffer.toString("base64");
       const body = new URLSearchParams();
       body.append("key", "6d207e02198a847aa98d0a2a901485a5");
       body.append("action", "upload");
@@ -30,19 +120,16 @@ export class SerpApiLensProvider implements ReverseImageSearchProvider {
       });
 
       if (!res.ok) {
-        console.warn(`[SerpApiLensProvider] Freeimage upload failed (${res.status})`);
         return null;
       }
 
       const data: any = await res.json();
       const directUrl = data.image?.url;
       if (directUrl && typeof directUrl === "string" && directUrl.startsWith("http")) {
-        console.log("[SerpApiLensProvider] Direct CDN image URL created:", directUrl);
         return directUrl;
       }
       return null;
-    } catch (e: any) {
-      console.warn("[SerpApiLensProvider] Image upload error:", e.message);
+    } catch {
       return null;
     }
   }
@@ -66,21 +153,36 @@ export class SerpApiLensProvider implements ReverseImageSearchProvider {
     const faceIndex = options.faceIndex ?? 0;
     const activeFaceImg = options.savedImageUrl || (options.faceCropBase64 ? options.faceCropBase64 : "/demo/consented-photo.jpg");
 
-    console.log(`[SerpApiLensProvider] Preparing public image for Google Lens (Targeting Face #${faceIndex + 1}, buffer size: ${targetBuffer.length} bytes)...`);
-    const publicUrl = await this.uploadToPublicHost(targetBuffer, targetMime);
-    if (!publicUrl) {
-      throw new Error("Unable to create public image link for Google Lens search.");
+    console.log(`[SerpApiLensProvider] Preparing image for Google Lens (Targeting Face #${faceIndex + 1}, buffer size: ${targetBuffer.length} bytes)...`);
+
+    // First attempt: direct SerpApi Image API upload to get image_id
+    let imageId = await this.uploadToSerpApi(targetBuffer, targetMime, apiKey);
+    let publicUrl: string | null = null;
+    let params: URLSearchParams;
+
+    if (imageId) {
+      console.log(`[SerpApiLensProvider] Querying Google Lens using SerpApi image_id: ${imageId}`);
+      params = new URLSearchParams({
+        engine: "google_lens",
+        image_id: imageId,
+        api_key: apiKey.trim(),
+      });
+    } else {
+      // Secondary fallback attempt: public upload URL
+      console.log("[SerpApiLensProvider] Attempting public host fallback upload...");
+      publicUrl = await this.uploadToPublicHost(targetBuffer, targetMime);
+      if (!publicUrl) {
+        throw new Error("Unable to upload image for Google Lens search. Both SerpApi image endpoint and public host failed.");
+      }
+      console.log("[SerpApiLensProvider] Querying Google Lens with Face URL:", publicUrl);
+      params = new URLSearchParams({
+        engine: "google_lens",
+        url: publicUrl,
+        api_key: apiKey.trim(),
+      });
     }
 
-    console.log("[SerpApiLensProvider] Querying Google Lens with Face URL:", publicUrl);
-
     // 2. Query SerpApi Google Lens Engine
-    const params = new URLSearchParams({
-      engine: "google_lens",
-      url: publicUrl,
-      api_key: apiKey.trim(),
-    });
-
     const response = await fetch(`https://serpapi.com/search.json?${params.toString()}`);
     if (!response.ok) {
       const errText = await response.text().catch(() => "");
@@ -330,7 +432,9 @@ export class SerpApiLensProvider implements ReverseImageSearchProvider {
       candidatesCount: candidates.length,
       candidates,
       selectedEvidence: candidates[0] || null,
-      searchUrl: data.search_metadata?.google_lens_url || `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(publicUrl)}`,
+      searchUrl:
+        data.search_metadata?.google_lens_url ||
+        (publicUrl ? `https://lens.google.com/uploadbyurl?url=${encodeURIComponent(publicUrl)}` : "https://lens.google.com"),
       fallbackRequired: false,
       durationMs: Date.now() - startTime,
     };

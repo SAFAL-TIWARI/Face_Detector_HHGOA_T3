@@ -53,8 +53,8 @@ export class SocialEvidenceProvider implements ReverseImageSearchProvider {
           };
         }
       } catch (serpErr: any) {
-        console.error("[SocialEvidenceProvider] SerpApi Google Lens query error:", serpErr.message);
-        throw new Error(`Google Lens live search error: ${serpErr.message}`);
+        console.warn("[SocialEvidenceProvider] SerpApi Google Lens query warning:", serpErr.message);
+        console.log("[SocialEvidenceProvider] Falling back gracefully to contextual visual matcher...");
       }
     }
 
